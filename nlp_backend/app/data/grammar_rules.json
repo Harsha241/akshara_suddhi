@@ -1,0 +1,155 @@
+[
+  {
+    "pattern": "ాడు",
+    "preceding": "(ఆమె|ఇది|అది)",
+    "correction": "ింది",
+    "type": "subject_verb",
+    "explanation": "Feminine/neuter subjects require -ింది ending"
+  },
+  {
+    "pattern": "ింది",
+    "preceding": "(అతను|అతడు)",
+    "correction": "ాడు",
+    "type": "subject_verb",
+    "explanation": "Masculine subject requires -ాడు ending"
+  },
+  {
+    "pattern": "ాడు",
+    "preceding": "(వారు|వాళ్లు|మీరు)",
+    "correction": "ారు",
+    "type": "subject_verb",
+    "explanation": "Plural/honorific subject requires -ారు"
+  },
+  {
+    "pattern": "ాను",
+    "preceding": "(అతను|ఆమె|వారు)",
+    "correction": "ాడు",
+    "type": "subject_verb",
+    "explanation": "First person ending used incorrectly"
+  },
+  {
+    "pattern": "ాడు",
+    "preceding": "నేను",
+    "correction": "ాను",
+    "type": "subject_verb",
+    "explanation": "నేను requires -ాను ending"
+  },
+  {
+    "pattern": "ావు",
+    "preceding": "(అతను|ఆమె)",
+    "correction": "ాడు",
+    "type": "subject_verb",
+    "explanation": "Second person ending used incorrectly"
+  },
+  {
+    "pattern": "తు(?!న్న)నాడు",
+    "correction": "తున్నాడు",
+    "type": "tense",
+    "explanation": "Continuous tense missing 'న్న'"
+  },
+  {
+    "pattern": "తు(?!న్న)నాను",
+    "correction": "తున్నాను",
+    "type": "tense",
+    "explanation": "Continuous tense correction"
+  },
+  {
+    "pattern": "తు(?!న్న)నావు",
+    "correction": "తున్నావు",
+    "type": "tense",
+    "explanation": "Continuous tense correction"
+  },
+
+  {
+    "pattern": "వస్తున్నాడు",
+    "condition": "contains('నిన్న')",
+    "correction": "వచ్చాడు",
+    "type": "tense",
+    "explanation": "Past indicator requires past tense"
+  },
+  {
+    "pattern": "వచ్చాడు",
+    "condition": "contains('ఇప్పుడు')",
+    "correction": "వస్తున్నాడు",
+    "type": "tense",
+    "explanation": "Present context mismatch"
+  },
+
+  {
+    "pattern": "వచ్చాను కాదు",
+    "correction": "రాలేదు",
+    "type": "negation",
+    "explanation": "Incorrect negation structure"
+  },
+  {
+    "pattern": "చేసాను కాదు",
+    "correction": "చేయలేదు",
+    "type": "negation",
+    "explanation": "Negation should use 'లేదు'"
+  },
+  {
+    "pattern": "వెళ్తున్నాడు",
+    "preceding": "నువ్వు",
+    "correction": "వెళ్తున్నావు",
+    "type": "question",
+    "explanation": "Second person mismatch"
+  },
+
+  {
+    "pattern": "కి$",
+    "preceding": ".*[మనణ]$",
+    "correction": "కు",
+    "type": "postposition",
+    "explanation": "Use 'కు' after consonant endings"
+  },
+  {
+    "pattern": "కు$",
+    "preceding": ".*[ాిీుూెేైొోౌ]$",
+    "correction": "కి",
+    "type": "postposition",
+    "explanation": "Use 'కి' after vowel endings"
+  },
+
+  {
+    "pattern": "ఆమె వచ్చాడు",
+    "correction": "ఆమె వచ్చింది",
+    "type": "pronoun",
+    "explanation": "Gender mismatch"
+  },
+  {
+    "pattern": "అతను వచ్చింది",
+    "correction": "అతను వచ్చాడు",
+    "type": "pronoun",
+    "explanation": "Gender mismatch"
+  },
+
+
+  {
+    "pattern": "వచాను",
+    "correction": "వచ్చాను",
+    "type": "common_error",
+    "explanation": "Missing consonant doubling"
+  },
+  {
+    "pattern": "వెల్లాను",
+    "correction": "వెళ్లాను",
+    "type": "common_error",
+    "explanation": "Spelling correction"
+  },
+
+
+  {
+    "pattern": "^పుస్తకం నేను",
+    "correction": "నేను పుస్తకం",
+    "type": "syntax",
+    "explanation": "Telugu prefers SOV order"
+  },
+
+  {
+    "pattern": "వెళ్లి వచ్చాడు",
+    "preceding": "నేను",
+    "correction": "వెళ్లి వచ్చాను",
+    "type": "auxiliary",
+    "explanation": "Auxiliary verb mismatch"
+  }
+]
