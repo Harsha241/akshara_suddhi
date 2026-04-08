@@ -19,9 +19,9 @@ MAX_INPUT_LENGTH = 500   # max characters per API call
 
 # ─── Spell Checker ───────────────────────────────────────────────────────
 MAX_EDIT_DISTANCE        = 2
-TOP_SPELL_SUGGESTIONS    = 3
-FREQ_WEIGHT              = 0.6
-PHONETIC_WEIGHT          = 0.4
+TOP_SPELL_SUGGESTIONS    = 5
+FREQ_WEIGHT              = 0.55
+PHONETIC_WEIGHT          = 0.45
 
 # ─── Autocomplete ────────────────────────────────────────────────────────
 TOP_AUTOCOMPLETE          = 5
