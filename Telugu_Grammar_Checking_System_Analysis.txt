@@ -1,0 +1,1174 @@
+# Complete Telugu Grammar Checking System Analysis
+
+## 1. High-Level System Flow
+
+### The Complete Journey: User Input -> API -> Processing -> Output
+
+```
+User sends Telugu sentence
+        |
+        V
+FastAPI receives HTTP POST request at /autocorrect
+        |
+        V
+Pydantic validates and normalizes input (NFC Unicode)
+        |
+        V
+Tokenization with character offset tracking
+        |
+        V
+Word boundary recovery (splits joined words)
+        |
+        V
+Subject-verb agreement correction
+        |
+        V
+Postposition insertion
+        |
+        V
+Grammar rule engine application
+        |
+        V
+Spell checking with N-gram re-ranking
+        |
+        V
+Error collection and span generation
+        |
+        V
+JSON response with corrections and highlighting data
+        |
+        V
+Frontend uses offsets to highlight errors in original text
+```
+
+### Where FastAPI Receives Input
+- **Entry Point**: main.py creates FastAPI app with CORS middleware
+- **Route Handler**: app/routes/autocorrect.py handles POST /autocorrect
+- **Input Validation**: app/models.py defines AutocorrectRequest with automatic Unicode normalization
+- **Health Check**: main.py provides /health endpoint to verify system status
+
+### What Happens in Each Stage
+1. **Tokenization**: Splits text while preserving character positions
+2. **Boundary Recovery**: Fixes incorrectly joined Telugu words
+3. **Agreement Correction**: Ensures verbs match subject pronouns
+4. **Postposition Insertion**: Adds missing grammatical markers
+5. **Grammar Rules**: Applies pattern-based corrections
+6. **Spell Check**: Corrects typos using multiple scoring factors
+7. **Response Generation**: Builds structured JSON with corrections
+
+### How Final Response is Formed
+- **Corrected Sentence**: Reconstructed from processed tokens
+- **Error Spans**: Array of corrections with start/end positions
+- **Metadata**: Error types, explanations, and processing stages
+- **UI Integration**: Frontend uses spans to highlight specific text regions
+
+## 2. Pipeline Breakdown (Stage-by-Stage)
+
+### Stage 1: Tokenization
+
+**File**: app/routes/autocorrect.py (lines 22-40)
+
+**How sentence is split**:
+```python
+regex = re.compile(r'([\u0C00-\u0C7F]+|[a-zA-Z]+|[0-9]+|[^\s\u0C00-\u0C7Fa-zA-Z0-9]+|\s+)')
+```
+
+**What this regex does**:
+- [\u0C00-\u0C7F]+ - Captures Telugu words (continuous Telugu characters)
+- [a-zA-Z]+ - Captures English words  
+- [0-9]+ - Captures numbers
+- [^\s\u0C00-\u0C7Fa-zA-Z0-9]+ - Captures punctuation/symbols
+- \s+ - Captures whitespace blocks
+
+**How start/end offsets are stored**:
+```python
+parts = []           # Actual text fragments
+part_spans = []      # (start, end) character positions
+token_indices = []   # Which parts are actual tokens (not spaces)
+tokens = []          # Just the token text
+```
+
+**Why offsets are important**:
+- Enable precise error highlighting in UI
+- Allow reconstruction of corrected text
+- Maintain mapping between original and corrected positions
+- Essential for multi-stage processing where token count may change
+
+**Example Input/Output**:
+```
+Input: "??? ???? ??????"
+parts: ["????", " ", "?????", " ", "???????"]
+part_spans: [(0,3), (3,4), (4,8), (8,9), (9,14)]
+token_indices: [0, 2, 4]
+tokens: ["????", "?????", "???????"]
+```
+
+### Stage 2: Agreement & Postposition Correction
+
+**File**: app/core/agreement_postposition.py
+
+**How subject is detected**:
+```python
+_SUBJECTS: Dict[str, SubjectInfo] = {
+    "????": SubjectInfo("????", "1", "sg"),      # 1st person singular
+    "????": SubjectInfo("????", "2", "sg"),      # 2nd person singular  
+    "?????": SubjectInfo("?????", "3", "sg", "m"), # 3rd person singular male
+    "????": SubjectInfo("????", "3", "sg", "f"),     # 3rd person singular female
+    "????": SubjectInfo("????", "3", "pl"),      # 3rd person plural
+}
+```
+
+**How verb endings are matched**:
+The system identifies verb patterns and replaces endings based on subject:
+
+```python
+# Simple present/future endings
+_VERB_ENDINGS = ("?????", "?????", "?????", "?????", "?????", "?????")
+# Present continuous endings  
+_PRES_CONT_ENDINGS = ("????????", "???????", "????????", "????????", "????????", "????????", "??????")
+# Past tense endings
+_PAST_ENDINGS = ("???", "?????", "?????", "?????", "?????", "?????")
+```
+
+**How Telugu morphology is used**:
+- **Person**: 1st (????), 2nd (????), 3rd (?????/????/????)
+- **Number**: Singular (sg) vs Plural (pl) 
+- **Gender**: Male (m) vs Female (f) for 3rd person
+- **Tense**: Past, Present, Future patterns
+
+**What rules are applied**:
+1. **Subject Detection**: Find first subject pronoun in tokens
+2. **Verb Agreement**: Replace verb endings to match subject
+3. **Postposition Insertion**: Add "??"/??" before motion verbs
+
+**Example**:
+```
+Input tokens: ["????", "????", "???????"]
+Subject: "????" (1st person singular)
+Verb: "???????" (3rd person singular ending)
+Correction: "????????" (1st person singular ending)
+Postposition: "????" -> "?????" (before motion verb)
+Output: ["????", "?????", "???????"]
+```
+
+### Stage 3: Word Boundary Recovery
+
+**File**: app/core/boundary_recovery.py
+
+**How boundaries are identified**:
+1. **Standalone Matra Detection**: Finds invalid matra characters like "?" that should be attached to consonants
+2. **Dictionary Lookup**: Checks if token exists in dictionary
+3. **Split Scoring**: Tries different split points and scores them
+
+**What patterns are used**:
+```python
+_MATRA_TO_VOWEL: Dict[str, str] = {
+    "?": "?", "?": "?", "?": "?", "?": "?", "?": "?",
+    "?": "?", "?": "?", "?": "?", "?": "?", "?": "?", "?": "?"
+}
+```
+
+**How clauses are stored**:
+This stage actually works on tokens, not clauses. It recovers word boundaries before higher-level processing.
+
+**Example**:
+```
+Input: "????????????" (incorrectly joined)
+Clusters: ["?", "?", "?", "?", "??", "?", "?", "??", "??", "??", "?"]
+Split candidates tested:
+  - "?????" + "????????" (both in dictionary ?)
+  - "????" + "?????????" (second not in dictionary ?)
+Best split: ["?????", "???????"]
+```
+
+### Stage 4: Grammar Rule Engine
+
+**File**: app/core/grammar_engine.py
+
+**How rules are loaded**:
+```python
+def __init__(self, rules: List[Dict]):
+    self.rules: List[Dict] = []
+    for r in rules:
+        rr = dict(r)
+        pat_src = str(rr.get("pattern", "")).strip()
+        rr["_priority"] = int(rr.get("priority", 100))
+        
+        # Determine rule scope
+        is_sentence = bool(re.search(r"\s", pat_src)) or pat_src.startswith("^") or pat_src.endswith("$")
+        rr["_scope"] = "sentence" if is_sentence else "token_suffix"
+        rr["_pat"] = re.compile(pat_src) if is_sentence else re.compile(pat_src + "$")
+```
+
+**Difference between rule types**:
+
+**Token-level rules**:
+- Apply to individual words
+- Pattern automatically gets "$" appended (word boundary)
+- Example: "????" matches exact word "????"
+
+**Sentence-level rules**:
+- Contain whitespace or anchors (^/$)
+- Apply to whole sentence or multi-word patterns
+- Example: "????.*????????" matches subject-verb patterns
+
+**How priority works**:
+- Lower numbers run first (default: 100)
+- Allows fine-grained control over rule application order
+- Prevents conflicts between similar rules
+
+**How rules are applied**:
+```python
+for rule in sorted(self.rules, key=lambda r: r["_priority"]):
+    if rule["_scope"] == "token_suffix":
+        # Apply to each token
+        for token in tokens:
+            if rule["_pat"].search(token):
+                # Apply correction
+    else:
+        # Apply to whole sentence
+        if rule["_pat"].search(sentence):
+            # Apply correction
+```
+
+### Stage 5: Clause Detection (Advanced Feature)
+
+**File**: app/core/clause_processor.py and app/core/clause_grammar_checker.py
+
+**How clauses are identified**:
+Clauses are detected using:
+- **Verb forms and tense markers**: Endings that indicate clause boundaries
+- **Conjunctions**: Words like "?????", "??????", "????????"
+- **Particles and morphological endings**: Grammatical markers
+- **NOT by word position** (Telugu has free word order)
+
+**Clause Types**:
+```python
+class ClauseType(Enum):
+    INDEPENDENT = "independent"              # Complete meaning
+    NON_FINITE_PARTICIPIAL = "non_finite"    # Participial forms
+    INFINITIVAL = "infinitival"              # Purpose/intent
+    CONDITIONAL = "conditional"              # "If then" type
+    SEQUENTIAL = "sequential"                # Explanatory
+    RELATIVE = "relative"                    # Relative clause
+    TEMPORAL = "temporal"                    # When/time-based
+```
+
+**How clauses are stored**:
+```python
+@dataclass
+class ClauseUnit:
+    tokens: List[str]
+    start_idx: int
+    end_idx: int
+    clause_type: ClauseType
+    verb_info: Optional[VerbInfo] = None
+    conjunction: Optional[str] = None
+```
+
+### Stage 6: Spell Checking with N-gram Re-ranking
+
+**File**: app/core/spellchecker.py
+
+**How spell checking works**:
+1. **Candidate Generation**: Uses Levenshtein distance to find similar words
+2. **Phonetic Scoring**: Considers sound-alike substitutions
+3. **Frequency Ranking**: Prefers common words
+4. **Context Re-ranking**: Uses bigram probabilities when context available
+
+**Scoring Formula**:
+```python
+base_score = FREQ_W × norm_freq + PHONETIC_W × phonetic_sim + LENGTH_PENALTY
+final_score = base_score + NGRAM_W × ngram_boost
+```
+
+**Morphological Suffix Handling**:
+```python
+_SUFFIXES = [
+    # Postpositions / case markers
+    "?????", "??????", "?????", "??????", "??????", "??????",
+    "??", "??", "??", "??", "??", "?????", "?????", "??????",
+    # Verb endings
+    "????????", "????????", "??????", "??????", "???", "?????",
+    # Plural suffixes
+    "??", "??", "??",
+]
+```
+
+### Stage 7: Error Collection & Offsets
+
+**File**: app/routes/autocorrect.py (lines 70-131)
+
+**How errors are stored**:
+```python
+@dataclass
+class AutocorrectSpan:
+    start: int           # Character position in original text
+    end: int             # Character position end
+    original: str        # Original text
+    correction: str      # Corrected text  
+    type: str           # "grammar" | "spell"
+    stages: List[str]    # Processing stages applied
+```
+
+**How positions are tracked**:
+- **Original spans**: From tokenization stage
+- **Token mapping**: Links token indices to character positions
+- **Boundary recovery**: Handles cases where token count changes
+- **Multi-stage tracking**: Records which stages modified each token
+
+**How overlapping errors are handled**:
+- **Stage tracking**: Each modification records its stage
+- **Sequential application**: Later stages can override earlier ones
+- **Span accumulation**: Multiple corrections can be stored for same region
+
+### Stage 8: Response Generation
+
+**File**: app/routes/autocorrect.py (lines 133-146)
+
+**How corrected sentence is built**:
+```python
+# If no boundary recovery changed token count
+if not did_recover:
+    for idx_in_list, part_index in enumerate(token_indices):
+        parts[part_index] = final_tokens[idx_in_list]
+    corrected_sentence = "".join(parts)
+else:
+    # Whitespace-normalized reconstruction
+    corrected_sentence = " ".join(final_tokens)
+```
+
+**What JSON response looks like**:
+```json
+{
+    "original_sentence": "???? ???? ??????",
+    "corrected_sentence": "???? ?????? ??????", 
+    "spans": [
+        {
+            "start": 4,
+            "end": 8,
+            "original": "????",
+            "correction": "?????",
+            "type": "grammar",
+            "stages": ["grammar"]
+        },
+        {
+            "start": 9,
+            "end": 14,
+            "original": "???????", 
+            "correction": "???????",
+            "type": "grammar",
+            "stages": ["grammar"]
+        }
+    ]
+}
+```
+
+**How UI uses it**:
+- **Highlighting**: Uses start/end positions to mark errors
+- **Tooltips**: Shows corrections and explanations
+- **Accept/Reject**: Allows user to apply or ignore suggestions
+- **Real-time**: Can show corrections as user types
+
+## 3. File-by-File Explanation
+
+### Root Level Files
+
+**File: main.py**
+- **Purpose**: FastAPI application entry point and system orchestrator
+- **Key Functions**:
+  - lifespan(): Loads all data and initializes NLP engines at startup
+  - health(): Provides system status endpoint
+- **Input/Output**: Receives HTTP requests, returns JSON responses
+- **Connections**: Imports and mounts all route handlers, initializes singleton instances
+- **Example**: Starts server, loads 25,000+ words, builds trie, creates spell checker
+
+**File: requirements.txt**
+- **Purpose**: Python dependencies specification
+- **Key Components**: FastAPI, Uvicorn, Pydantic
+- **Input/Output**: Text file listing package versions
+- **Connections**: Used by pip to install required packages
+
+**File: app/config.py**
+- **Purpose**: Centralized configuration management
+- **Key Functions**: Path definitions, API limits, algorithm weights
+- **Input/Output**: Configuration constants used throughout system
+- **Connections**: Imported by almost every module for settings
+- **Example**: MAX_EDIT_DISTANCE = 2, FREQ_WEIGHT = 0.55
+
+### Application Core Files
+
+**File: app/models.py**
+- **Purpose**: Pydantic data models for API request/response validation
+- **Key Classes**: AutocorrectRequest, AutocorrectResponse, GrammarError, AutocorrectSpan
+- **Input/Output**: Validates incoming data, structures outgoing responses
+- **Connections**: Used by all route handlers for type safety
+- **Example**: Automatically normalizes Unicode using _nfc() function
+
+**File: app/__init__.py**
+- **Purpose**: Python package initialization
+- **Key Functions**: Marks directory as Python package
+- **Input/Output**: Minimal package setup
+- **Connections**: Enables imports like from app import ...
+
+### Core NLP Components (app/core/)
+
+**File: app/core/__init__.py**
+- **Purpose**: Core package initialization
+- **Connections**: Enables imports of NLP components
+
+**File: app/core/unicode_utils.py**
+- **Purpose**: Telugu character processing and tokenization utilities
+- **Key Functions**:
+  - split_grapheme_clusters(): Splits text into Telugu grapheme units
+  - is_telugu_word(): Identifies Telugu vs English words
+  - tokenize_telugu_with_spans(): Tokenizes with character positions
+- **Input/Output**: Text strings -> token lists with metadata
+- **Connections**: Used by tokenization, spell checking, boundary recovery
+- **Example**: "????" -> ['??', '??'] (grapheme clusters)
+
+**File: app/core/phonetic.py**
+- **Purpose**: Phonetic similarity analysis for Telugu characters
+- **Key Functions**: phonetic_similarity(), substitution_cost()
+- **Input/Output**: Character pairs -> similarity scores
+- **Connections**: Used by spell checker for typo detection
+- **Example**: "?" vs "?" have lower substitution cost (confused pair)
+
+**File: app/core/levenshtein.py**
+- **Purpose**: Weighted edit distance calculation
+- **Key Functions**:
+  - weighted_levenshtein(): Calculates phonetic-aware edit distance
+  - generate_candidates(): Finds dictionary words within distance threshold
+- **Input/Output**: Word pairs -> distance scores, candidate lists
+- **Connections**: Core component of spell checker
+- **Example**: "????" vs "????" -> distance 1.0 (single substitution)
+
+**File: app/core/ngram.py**
+- **Purpose**: Statistical language modeling for context
+- **Key Functions**: unigram_prob(), bigram_prob()
+- **Input/Output**: Word sequences -> probability scores
+- **Connections**: Used by spell checker for contextual re-ranking
+- **Example**: P("?????" | "????") = 0.02 (bigram probability)
+
+**File: app/core/trie.py**
+- **Purpose**: Prefix tree for fast autocomplete
+- **Key Functions**: prefix_search(), insert(), search()
+- **Input/Output**: Prefix strings -> word completions with frequencies
+- **Connections**: Used by autocomplete endpoint
+- **Example**: "??" -> [("????", 5000), ("??????", 200)]
+
+**File: app/core/spellchecker.py**
+- **Purpose**: Intelligent spell correction engine
+- **Key Functions**: check(): Main spell checking with context
+- **Input/Output**: Words + context -> correction suggestions with scores
+- **Connections**: Uses levenshtein, phonetic, ngram, morphology
+- **Example**: "????????" + context ["????"] -> suggests "???????"
+
+**File: app/core/grammar_engine.py**
+- **Purpose**: Rule-based grammar correction system
+- **Key Functions**: check(): Applies grammar rules to tokens
+- **Input/Output**: Token lists -> grammar errors with corrections
+- **Connections**: Loads rules from JSON, used by autocorrect pipeline
+- **Example**: Detects subject-verb agreement violations
+
+**File: app/core/agreement_postposition.py**
+- **Purpose**: Subject-verb agreement and postposition insertion
+- **Key Functions**:
+  - detect_subject(): Finds subject pronouns
+  - correct_verb_agreement(): Fixes verb endings
+  - insert_postpositions(): Adds missing grammatical markers
+- **Input/Output**: Token lists -> corrected tokens + errors
+- **Connections**: Applied early in autocorrect pipeline
+- **Example**: "???? ??????" -> "???? ??????"
+
+**File: app/core/boundary_recovery.py**
+- **Purpose**: Word boundary detection and recovery
+- **Key Functions**: recover_word_boundaries(): Splits joined words
+- **Input/Output**: Text strings -> token lists
+- **Connections**: Pre-processing step before grammar/spell checking
+- **Example**: "????????????" -> ["?????", "???????"]
+
+**File: app/core/transliterator.py**
+- **Purpose**: Roman-to-Telugu script conversion
+- **Key Functions**: transliterate(): Converts Romanized text to Telugu
+- **Input/Output**: Roman strings -> Telugu script strings
+- **Connections**: Used by transliteration endpoint
+- **Example**: "neeNU" -> "????"
+
+**File: app/core/clause_processor.py**
+- **Purpose**: Advanced clause-based grammar analysis
+- **Key Classes**: ClauseUnit, ClauseTransformer, ClauseType
+- **Input/Output**: Sentences -> clause structures with metadata
+- **Connections**: Advanced grammar checking beyond token-level
+- **Example**: Identifies independent vs dependent clauses
+
+**File: app/core/clause_grammar_checker.py**
+- **Purpose**: Clause-level grammar validation
+- **Key Classes**: ClauseGrammarChecker
+- **Input/Output**: Clause structures -> cross-clause consistency errors
+- **Connections**: Works with clause_processor for advanced analysis
+- **Example**: Validates tense consistency across clauses
+
+**File: app/core/morphology.py**
+- **Purpose**: Telugu morphological analysis
+- **Key Functions**: Analyzes word structure, suffixes, prefixes
+- **Input/Output**: Words -> morphological components
+- **Connections**: Supports grammar and spell checking
+- **Example**: Breaks down "????????" into root + suffixes
+
+**File: app/core/analyzer.py**
+- **Purpose**: General text analysis utilities
+- **Key Functions**: Various text processing helpers
+- **Input/Output**: Text -> analysis results
+- **Connections**: Supporting utilities for other components
+
+**File: app/core/corrector.py**
+- **Purpose**: Text correction helpers
+- **Key Functions**: Common correction patterns and utilities
+- **Input/Output**: Text segments -> corrections
+- **Connections**: Shared correction logic
+
+**File: app/core/features.py**
+- **Purpose**: Feature extraction for NLP tasks
+- **Key Functions**: Extracts linguistic features from text
+- **Input/Output**: Text -> feature vectors
+- **Connections**: Used by machine learning components
+
+**File: app/core/rules.py**
+- **Purpose**: Rule processing utilities
+- **Key Functions**: Rule application and management
+- **Input/Output**: Rule definitions -> applied transformations
+- **Connections**: Supports grammar engine
+
+**File: app/core/examples.py**
+- **Purpose**: Usage examples and test data
+- **Key Functions**: Example sentences and expected outputs
+- **Input/Output**: Test cases for validation
+- **Connections**: Development and testing resource
+
+**File: app/core/linguistic_grammar_engine.py**
+- **Purpose**: Alternative linguistic grammar processing
+- **Key Functions**: Linguistically-motivated grammar rules
+- **Input/Output**: Text -> grammar corrections
+- **Connections**: Complementary to main grammar engine
+
+### API Routes (app/routes/)
+
+**File: app/routes/__init__.py**
+- **Purpose**: Routes package initialization
+- **Connections**: Enables route imports
+
+**File: app/routes/autocorrect.py**
+- **Purpose**: Complete text correction pipeline
+- **Key Functions**: autocorrect_sentence(): Main correction endpoint
+- **Input/Output**: Sentences -> corrected sentences with error spans
+- **Connections**: Orchestrates all NLP components
+- **Example**: "???? ???? ??????" -> "???? ?????? ??????"
+
+**File: app/routes/grammar.py**
+- **Purpose**: Grammar checking endpoint
+- **Key Functions**: grammar_check(): Grammar-only validation
+- **Input/Output**: Sentences -> grammar errors
+- **Connections**: Uses grammar_engine directly
+- **Example**: Detects agreement violations
+
+**File: app/routes/spellcheck.py**
+- **Purpose**: Spell checking endpoint
+- **Key Functions**: spellcheck(): Single word spell checking
+- **Input/Output**: Words + context -> spelling suggestions
+- **Connections**: Uses spell_checker component
+- **Example**: "???????" -> suggests alternatives
+
+**File: app/routes/autocomplete.py**
+- **Purpose**: Word completion endpoint
+- **Key Functions**: autocomplete(): Prefix-based completion
+- **Input/Output**: Prefix strings -> word suggestions
+- **Connections**: Uses trie data structure
+- **Example**: "??" -> ["????", "??????"]
+
+**File: app/routes/transliterate.py**
+- **Purpose**: Transliteration endpoint
+- **Key Functions**: transliterate(): Script conversion
+- **Input/Output**: Roman text -> Telugu script
+- **Connections**: Uses transliterator component
+- **Example**: "?????????" -> "?????????"
+
+### Data Files (app/data/)
+
+**File: app/data/dictionary.json**
+- **Purpose**: Telugu word dictionary with frequencies
+- **Input/Output**: JSON format {word: frequency}
+- **Connections**: Used by spell checker, trie, boundary recovery
+- **Example**: {"????": 5000, "????": 2000}
+
+**File: app/data/unigrams.json**
+- **Purpose**: Single word frequency counts
+- **Input/Output**: JSON format {word: count}
+- **Connections**: Used by ngram model for probabilities
+- **Example**: {"????": 5000, "???????": 3000}
+
+**File: app/data/bigrams.json**
+- **Purpose**: Word pair frequency counts
+- **Input/Output**: JSON format {word1: {word2: count}}
+- **Connections**: Used by ngram model for contextual probabilities
+- **Example**: {"????": {"???????": 1000}}
+
+**File: app/data/grammar_rules.json**
+- **Purpose**: Grammar correction rules
+- **Input/Output**: JSON rule definitions with patterns and corrections
+- **Connections**: Loaded by grammar_engine
+- **Example**: [{"pattern": "????.*???????", "correction": "???????"}]
+
+## 4. Data Flow Between Files
+
+### Step-by-Step Chain of Execution
+
+```
+User Request
+    |
+    V
+FastAPI (main.py)
+    |
+    V
+Route Handler (app/routes/autocorrect.py)
+    |
+    V
+Unicode Utils (app/core/unicode_utils.py) - Tokenization
+    |
+    V
+Boundary Recovery (app/core/boundary_recovery.py) - Word splitting
+    |
+    V
+Agreement & Postposition (app/core/agreement_postposition.py) - Grammar fixes
+    |
+    V
+Grammar Engine (app/core/grammar_engine.py) - Rule-based corrections
+    |
+    V
+Spell Checker (app/core/spellchecker.py) - Typo correction
+    |   |-- Levenshtein (app/core/levenshtein.py) - Edit distance
+    |   |-- Phonetic (app/core/phonetic.py) - Sound similarity
+    |   |-- N-gram (app/core/ngram.py) - Context scoring
+    |
+    V
+Response Assembly (app/routes/autocorrect.py)
+    |
+    V
+JSON Response with Models (app/models.py)
+```
+
+### Detailed Data Flow
+
+**1. Request Reception**
+- main.py receives HTTP POST at /autocorrect
+- app/models.py validates input using AutocorrectRequest
+- Data flows as: JSON -> Pydantic model -> validated string
+
+**2. Tokenization**
+- autocorrect.py calls unicode_utils.py
+- unicode_utils.py uses regex to split text
+- Data flows as: string -> token list + character spans
+- Example: "???? ??????" -> ["????", "???????"] + [(0,3), (4,9)]
+
+**3. Boundary Recovery**
+- autocorrect.py calls boundary_recovery.py
+- boundary_recovery.py checks dictionary and tries splits
+- Data flows as: tokens -> recovered tokens (possibly more)
+- Example: ["???????????"] -> ["?????", "???????"]
+
+**4. Agreement Correction**
+- autocorrect.py calls agreement_postposition.py
+- agreement_postposition.py detects subjects and fixes verbs
+- Data flows as: tokens -> corrected tokens + error list
+- Example: ["????", "???????"] -> ["????", "???????"] + errors
+
+**5. Grammar Rules**
+- autocorrect.py calls grammar_engine.py
+- grammar_engine.py applies JSON rules to tokens
+- Data flows as: tokens -> grammar-checked tokens + more errors
+- Example: Applies pattern-based corrections
+
+**6. Spell Checking**
+- autocorrect.py calls spellchecker.py
+- spellchecker.py orchestrates multiple components:
+  - levenshtein.py: Generates candidate words
+  - phonetic.py: Scores phonetic similarity
+  - ngram.py: Provides contextual probabilities
+- Data flows as: word + context -> suggestions with scores
+- Example: "???????" + ["????"] -> [("???????", 0.95)]
+
+**7. Response Assembly**
+- autocorrect.py collects all corrections
+- Maps token positions back to character spans
+- Builds response using models.py classes
+- Data flows as: corrections + spans -> JSON response
+
+### Data Format Transformations
+
+**String -> Tokens** (unicode_utils.py):
+```python
+"???? ?????? ????????"
+-> ["????", "??????", "???????"]
+```
+
+**Tokens -> Tokens + Spans** (autocorrect.py):
+```python
+["????", "??????", "???????"]
+-> {
+    tokens: ["????", "??????", "???????"],
+    spans: [(0,3), (4,8), (9,14)]
+}
+```
+
+**Tokens -> Corrected Tokens** (multiple stages):
+```python
+["????", "????", "???????"]
+-> ["????", "??????", "???????"]
+```
+
+**Corrections -> JSON Response** (models.py):
+```python
+{
+    original_sentence: "???? ???? ??????",
+    corrected_sentence: "???? ?????? ????????",
+    spans: [
+        {
+            start: 4, end: 8,
+            original: "????",
+            correction: "??????", 
+            type: "grammar"
+        }
+    ]
+}
+```
+
+## 5. Example Walkthrough
+
+### Complete Processing of: "???? ???? ??????"
+
+#### Stage 1: Tokenization
+**File**: app/routes/autocorrect.py -> app/core/unicode_utils.py
+
+**Input**: "???? ???? ??????"
+
+**Tokenization Process**:
+```python
+regex = r'([\u0C00-\u0C7F]+|[a-zA-Z]+|[0-9]+|[^\s\u0C00-\u0C7Fa-zA-Z0-9]+|\s+)'
+parts = ["????", " ", "????", " ", "???????"]
+part_spans = [(0,3), (3,4), (4,8), (8,9), (9,14)]
+token_indices = [0, 2, 4]
+tokens = ["????", "????", "???????"]
+```
+
+**Output**: 
+- tokens: ["????", "????", "???????"]
+- part_spans: [(0,3), (4,8), (9,14)]
+
+#### Stage 2: Boundary Recovery
+**File**: app/core/boundary_recovery.py
+
+**Input**: ["????", "????", "???????"]
+
+**Process**:
+- Check each token against dictionary
+- "????" ? (in dictionary)
+- "????" ? (in dictionary) 
+- "???????" ? (in dictionary)
+- No boundary recovery needed
+
+**Output**: ["????", "????", "???????"] (unchanged)
+
+#### Stage 3: Agreement & Postposition Correction
+**File**: app/core/agreement_postposition.py
+
+**Input**: ["????", "????", "???????"]
+
+**Subject Detection**:
+```python
+subjects = ["????", "????", "?????", "????", "????"]
+found_subject = "????" at index 0
+subject_info = SubjectInfo("????", "1", "sg")  # 1st person singular
+```
+
+**Verb Agreement**:
+```python
+verb_pattern = re.compile("?????$")  # Matches "???????"
+current_ending = "?????"
+target_ending = "?????"  # For 1st person singular
+correction = "???????"
+```
+
+**Postposition Insertion**:
+```python
+motion_verbs = ["?????", "????", "???"]
+verb_idx = 2 ("???????")
+noun_idx = 1 ("????")
+if noun starts with vowel? No -> use "??"
+correction = "??????"
+```
+
+**Output**: 
+- tokens: ["????", "??????", "???????"]
+- errors: 
+  ```python
+  [
+    GrammarError(
+      word="????", position=1, correction="??????",
+      rule_category="postposition_insertion",
+      explanation="Added postposition for motion verb"
+    ),
+    GrammarError(
+      word="???????", position=2, correction="???????", 
+      rule_category="subject_verb_agreement",
+      explanation="Verb form adjusted to match subject '????'"
+    )
+  ]
+  ```
+
+#### Stage 4: Grammar Rule Engine
+**File**: app/core/grammar_engine.py
+
+**Input**: ["????", "??????", "???????"]
+
+**Process**:
+- Load grammar rules from JSON
+- Apply token-level and sentence-level rules
+- Check for additional patterns not caught by agreement system
+
+**Example Rules Applied**:
+```json
+[
+  {"pattern": "??????", "correction": "??????", "priority": 50},
+  {"pattern": ".*?????.*", "correction": null, "priority": 100}
+]
+```
+
+**Output**: No additional corrections (already correct)
+
+#### Stage 5: Spell Checking
+**File**: app/core/spellchecker.py
+
+**Input**: ["????", "??????", "???????"]
+
+**Process**:
+- Check each token against dictionary
+- All tokens are valid -> no spell corrections needed
+- Context would be used if corrections were needed
+
+**Output**: No spell corrections
+
+#### Stage 6: Error Collection & Response Generation
+**File**: app/routes/autocorrect.py
+
+**Input**: 
+- original_tokens: ["????", "????", "???????"]
+- final_tokens: ["????", "??????", "???????"]
+- errors: List from agreement stage
+- part_spans: [(0,3), (4,8), (9,14)]
+
+**Span Generation**:
+```python
+spans = [
+  AutocorrectSpan(
+    start=4, end=8,           # Character positions
+    original="????", 
+    correction="??????",
+    type="grammar",
+    stages=["grammar"]
+  ),
+  AutocorrectSpan(
+    start=9, end=14,
+    original="???????",
+    correction="???????", 
+    type="grammar",
+    stages=["grammar"]
+  )
+]
+```
+
+**Sentence Reconstruction**:
+```python
+parts = ["????", " ", "????", " ", "???????"]
+parts[2] = "??????"    # Replace token at index 2
+parts[4] = "???????"  # Replace token at index 4
+corrected_sentence = "".join(parts)
+```
+
+#### Final Response
+**File**: app/models.py -> JSON
+
+```json
+{
+  "original_sentence": "???? ???? ??????",
+  "corrected_sentence": "???? ?????? ????????",
+  "spans": [
+    {
+      "start": 4,
+      "end": 8,
+      "original": "????",
+      "correction": "??????", 
+      "type": "grammar",
+      "stages": ["grammar"]
+    },
+    {
+      "start": 9,
+      "end": 14,
+      "original": "???????",
+      "correction": "???????",
+      "type": "grammar", 
+      "stages": ["grammar"]
+    }
+  ]
+}
+```
+
+### UI Integration
+The frontend receives this JSON and uses the spans to highlight errors:
+- **Red underline**: Characters 4-8 ("????") 
+- **Hover tooltip**: "Added postposition for motion verb"
+- **Click to accept**: Replace "????" with "??????"
+- **Similar for second error**: Characters 9-14 ("???????")
+
+## 6. Design Decisions
+
+### Why Rule-Based?
+
+**The Choice**: The system primarily uses rule-based grammar correction rather than machine learning.
+
+**Why This Makes Sense**:
+1. **Interpretability**: Each correction can be explained with specific rules
+2. **Control**: Developers can precisely tune which corrections are made
+3. **Data Efficiency**: Doesn't require massive labeled datasets for Telugu
+4. **Reliability**: Consistent behavior, no "black box" decisions
+5. **Maintenance**: Easy to add new rules without retraining models
+
+**Trade-offs**:
+- **Pros**: Precise, explainable, maintainable
+- **Cons**: Limited to known patterns, requires manual rule creation
+
+**Example**: Instead of training a model to detect subject-verb agreement, the system has explicit rules:
+```python
+if subject == "????" and verb_ending == "?????":
+    change_ending_to("?????")
+```
+
+### Why Offsets?
+
+**The Choice**: Character-level start/end positions for error highlighting.
+
+**Why This Works**:
+1. **UI Integration**: Direct mapping to text editor positions
+2. **Precision**: Exact character ranges for highlighting
+3. **Language Agnostic**: Works with any script including Telugu
+4. **Reconstruction**: Can rebuild corrected text from spans
+5. **Multi-stage**: Survives multiple processing stages
+
+**Technical Implementation**:
+```python
+# Tokenization tracks positions
+parts = ["????", " ", "????", " ", "???????"]
+part_spans = [(0,3), (3,4), (4,8), (8,9), (9,14)]
+
+# Corrections reference original positions
+span = {
+    "start": 4, "end": 8,  # "????" in original text
+    "original": "????",
+    "correction": "??????"
+}
+```
+
+### Why Staged Pipeline?
+
+**The Choice**: Sequential processing stages rather than monolithic correction.
+
+**Why This Architecture**:
+1. **Modularity**: Each stage has clear responsibility
+2. **Debugging**: Can isolate issues to specific stages
+3. **Extensibility**: Easy to add new processing stages
+4. **Quality Control**: Each stage can validate previous work
+5. **Performance**: Early stages can reduce work for later ones
+
+**Pipeline Benefits**:
+```
+Stage 1: Tokenization -> Clean input for all stages
+Stage 2: Boundary Recovery -> Fixes obvious issues first  
+Stage 3: Agreement -> Handles grammatical structure
+Stage 4: Grammar Rules -> Applies pattern-based fixes
+Stage 5: Spell Check -> Final polish with context
+```
+
+### Why Separate Modules?
+
+**The Choice**: Many small, focused files rather than few large ones.
+
+**Advantages**:
+1. **Single Responsibility**: Each file has one clear purpose
+2. **Testing**: Can test individual components in isolation
+3. **Reusability**: Components can be used in different contexts
+4. **Maintainability**: Easier to understand and modify
+5. **Collaboration**: Multiple developers can work on different modules
+
+**Example Separation**:
+- spellchecker.py - Only spell checking logic
+- grammar_engine.py - Only grammar rule processing  
+- agreement_postposition.py - Only subject-verb agreement
+- boundary_recovery.py - Only word boundary detection
+
+### Why Unicode-Normalization?
+
+**The Choice**: Automatic NFC normalization in Pydantic models.
+
+**Importance for Telugu**:
+1. **Consistency**: Multiple Unicode representations can look identical
+2. **Correctness**: Prevents false mismatches due to encoding differences
+3. **Interoperability**: Standardized representation across systems
+4. **Performance**: Consistent data improves algorithm efficiency
+
+**Example**:
+```python
+# Both look identical but have different byte representations
+text1 = "????"  # NFC normalized
+text2 = "????"  # NFD normalized (decomposed)
+
+# Normalization makes them identical
+normalized = unicodedata.normalize("NFC", text2)
+```
+
+### Why Grapheme Clusters?
+
+**The Choice**: Process Telugu text as grapheme clusters rather than characters.
+
+**Why Critical for Telugu**:
+1. **Conjunct Consonants**: "???" should be one unit, not three characters
+2. **Matra Attachments**: "??" (consonant + vowel sign) is one logical unit
+3. **Edit Distance**: More accurate similarity measurements
+4. **User Perception**: Matches how users actually see the text
+
+**Example**:
+```python
+"????" -> ["??", "?"]  # 2 grapheme clusters
+"????" -> ["?", "?", "?", "?"]  # 4 Unicode characters
+```
+
+## 7. Strengths and Limitations
+
+### Strengths
+
+#### 1. **Comprehensive Pipeline**
+- **What works well**: Complete end-to-end processing from raw text to corrections
+- **Why it's good**: Handles multiple error types in single API call
+- **Example**: Fixes agreement, postpositions, grammar rules, and spelling together
+
+#### 2. **Telugu-Specific Design**
+- **What works well**: Deep understanding of Telugu morphology and grammar
+- **Why it's good**: Not just generic NLP applied to Telugu
+- **Example**: Handles complex verb conjugations and postposition systems
+
+#### 3. **Context-Aware Processing**
+- **What works well**: Uses N-gram models for contextual spell checking
+- **Why it's good**: Better suggestions based on surrounding words
+- **Example**: "????" -> suggests "????????" because of subject context
+
+#### 4. **Precise Error Highlighting**
+- **What works well**: Character-level offsets for UI integration
+- **Why it's good**: Exact positioning for user-friendly corrections
+- **Example**: Can highlight specific characters that need correction
+
+#### 5. **Modular Architecture**
+- **What works well**: Clean separation of concerns
+- **Why it's good**: Easy to maintain, test, and extend
+- **Example**: Can add new grammar rules without touching spell checking
+
+#### 6. **Performance Optimization**
+- **What works well**: Efficient data structures (Trie, N-gram caching)
+- **Why it's good**: Fast response times even with large dictionaries
+- **Example**: Prefix search in O(k) time where k is prefix length
+
+#### 7. **Mixed Language Support**
+- **What works well**: Handles Telugu-English code switching
+- **Why it's good**: Reflects real-world usage patterns
+- **Example**: "???? school ?? ??????" works correctly
+
+### Limitations
+
+#### 1. **Rule Coverage**
+- **Limitation**: Only catches errors explicitly programmed in rules
+- **Impact**: Misses novel or rare error patterns
+- **Example**: New grammatical constructions won't be recognized
+
+#### 2. **Dictionary Dependency**
+- **Limitation**: Spell checking limited to words in dictionary
+- **Impact**: Can't handle neologisms, proper names, or technical terms
+- **Example**: "????????" (optical) might be flagged as incorrect
+
+#### 3. **Context Window**
+- **Limitation**: N-gram model only considers immediate neighbors
+- **Impact**: Long-distance dependencies are missed
+- **Example**: Agreement errors across clause boundaries may be missed
+
+#### 4. **Training Data Bias**
+- **Limitation**: Dictionary and N-gram frequencies reflect training corpus
+- **Impact**: May favor formal/written Telugu over spoken dialects
+- **Example**: Regional variations might be "corrected" incorrectly
+
+#### 5. **Complex Sentence Handling**
+- **Limitation**: Clause-level processing is basic
+- **Impact**: Struggles with complex multi-clause sentences
+- **Example**: Nested clauses or long-distance dependencies
+
+#### 6. **No Learning Capability**
+- **Limitation**: System doesn't learn from user corrections
+- **Impact**: Repeated errors aren't automatically recognized
+- **Example**: If users consistently reject a suggestion, system doesn't adapt
+
+#### 7. **Performance with Large Texts**
+- **Limitation**: Designed for sentence-level processing
+- **Impact**: May be slow with paragraph or document-level input
+- **Example**: Processing entire essays could be time-consuming
+
+### Improvement Opportunities
+
+#### 1. **Machine Learning Integration**
+- **What**: Add ML models alongside rule-based system
+- **Why**: Catch patterns not covered by explicit rules
+- **How**: Use rules for high-precision cases, ML for coverage
+
+#### 2. **User Feedback Loop**
+- **What**: Learn from accepted/rejected corrections
+- **Why**: Improve suggestion quality over time
+- **How**: Track correction patterns and adjust weights
+
+#### 3. **Enhanced Context**
+- **What**: Larger context windows and discourse analysis
+- **Why**: Better handle long-distance dependencies
+- **How**: Document-level analysis and coreference resolution
+
+#### 4. **Domain Adaptation**
+- **What**: Specialized dictionaries and rules for different domains
+- **Why**: Handle technical, legal, medical Telugu
+- **How**: Configurable rule sets and domain-specific vocabularies
+
+#### 5. **Performance Optimization**
+- **What**: Caching, parallel processing, streaming
+- **Why**: Handle larger texts efficiently
+- **How**: Async processing and result streaming
+
+#### 6. **Better Error Explanation**
+- **What**: More detailed, educational error messages
+- **Why**: Help users understand *why* corrections are needed
+- **How**: Link to grammar rules and examples
+
+---
+
+## Summary
+
+This Telugu grammar checking system represents a sophisticated, well-architected approach to Indian language processing. The system combines:
+
+1. **Deep Telugu Linguistic Understanding**: Morphology, agreement, postpositions
+2. **Modern Software Architecture**: Modular, testable, maintainable code
+3. **User-Friendly Design**: Precise highlighting, clear explanations
+4. **Performance Optimization**: Efficient algorithms and data structures
+
+While it has limitations typical of rule-based systems, its strengths in Telugu-specific processing and clean architecture make it an excellent foundation for continued development. The modular design allows for incremental improvements, including potential integration of machine learning components while maintaining the interpretability and control of the rule-based core.
+
+The system successfully addresses many unique challenges of Telugu language processing including complex morphology, free word order, and script complexity, making it a valuable tool for Telugu writers and learners.
